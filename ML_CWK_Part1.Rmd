@@ -1,0 +1,260 @@
+---
+title: "ML_CWK_part1"
+author: "Santosh"
+date: "2024-07-19"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+# Install necessary packages if not already installed
+install.packages(c("NbClust", "cluster", "readxl", "dplyr", "ggplot2", "clusterCrit"))
+
+# Load necessary libraries
+library(NbClust)
+library(cluster)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(clusterCrit)
+```
+
+
+```{r}
+# Loading the dataset
+file_path <- "vehicles.xlsx"
+vehicles <- read_excel(file_path)
+
+# Displaying the first few rows of the dataset
+head(vehicles)
+```
+# 1) Data Preprocessing
+
+```{r}
+# Extracting the first 18 attributes for clustering
+data <- vehicles %>% select(-Class)
+
+# Defining a function to identify and replace outliers with NA by using the Interquartile Range (IQR) method
+remove_outliers <- function(x) {
+  lowerq <- quantile(x, probs = 0.25, na.rm = TRUE) 
+  upperq <- quantile(x, probs = 0.75, na.rm = TRUE) 
+  iqr <- IQR(x, na.rm = TRUE)
+  x_cleaned <- ifelse(x < lowerq - 1.5 * iqr | x > upperq + 1.5 * iqr, NA, x)
+  return(x_cleaned)
+}
+
+# Creating a boxplot to visualize the data distribution before outlier removal
+boxplot(data, main = "Box plot before Outlier Removal", col = "#03ff00")
+
+# Applying the outlier removal function to each column of the dataset
+data_no_outliers <- as.data.frame(lapply(data, remove_outliers))
+
+# Creating a boxplot to visualize the data distribution after outlier removal
+boxplot(data_no_outliers, main = "Box plot after Outlier Removal", col = "#FF0000")
+
+# Removing rows containing NAs (outliers were replaced with NAs)
+data_cleaned <- na.omit(data_no_outliers)
+
+# Scaling the dataset and normalizing the features
+scaled_data <- scale(data_cleaned)
+
+# Creating a boxplot to visualize the data distribution after scaling
+boxplot(scaled_data, main = "Box plot after Scaling", col = "#0000FF")
+```
+# 2) Determine Optimal Number of Clusters
+
+```{r}
+nbclust_results_euclidean <- NbClust(scaled_data, distance = "euclidean", min.nc = 2, max.nc = 10, method = "kmeans")
+best_cluster_counts <- table(nbclust_results_euclidean$Best.nc[1, ])
+barplot(best_cluster_counts, main="Optimal number of clusters - k based on 'Euclidean distance'", 
+        xlab="Number of clusters k", ylab="Frequency among all indices", col="#0073C2FF")
+
+# Elbow method
+wss <- (nrow(scaled_data) - 1) * sum(apply(scaled_data, 2, var))
+for (i in 2:10) wss[i] <- sum(kmeans(scaled_data, centers = i, nstart = 25)$tot.withinss)
+plot(1:10, wss, type = "b", pch = 19, frame = FALSE, 
+     xlab = "Number of clusters K", ylab = "Total within-clusters sum of squares",
+     main = "Elbow Method for Optimal Clusters")
+abline(v = which.min(diff(diff(wss))), lty = 2)
+
+# Gap statistics
+set.seed(123)
+gap_stat <- clusGap(scaled_data, FUN = kmeans, nstart = 25, K.max = 10, B = 50)
+plot(gap_stat, main = "Gap Statistics for Optimal Clusters")
+k_optimal_gap <- maxSE(gap_stat$Tab[, "gap"], gap_stat$Tab[, "SE.sim"])
+
+# Silhouette analysis
+sil_width <- numeric(10)
+for (k in 2:10) {
+  km.res <- kmeans(scaled_data, centers = k, nstart = 25)
+  ss <- silhouette(km.res$cluster, dist(scaled_data))
+  sil_width[k] <- mean(ss[, 3])
+}
+plot(1:10, sil_width, type = "b", pch = 19, frame = FALSE, 
+     xlab = "Number of clusters K", ylab = "Average silhouette width",
+     main = "Silhouette Method for Optimal Clusters")
+k_optimal_sil <- which.max(sil_width)
+
+# Determine the optimal k using majority vote
+k_optimal <- as.numeric(names(sort(table(c(nbclust_results_euclidean$Best.nc[1,], k_optimal_gap, k_optimal_sil)), decreasing = TRUE)[1]))
+
+```
+# 3) K-Means Clustering
+
+```{r}
+set.seed(123)
+kmeans_result <- kmeans(scaled_data, centers = k_optimal, nstart = 25)
+
+# Display the clustering result
+print(kmeans_result)
+
+# K-means clustering result plot
+clusplot(scaled_data, kmeans_result$cluster, color=TRUE, shade=TRUE, labels=2, lines=0)
+
+# BSS/TSS ratio
+bss <- kmeans_result$betweenss
+tss <- kmeans_result$totss
+bss_tss_ratio <- bss / tss
+print(bss_tss_ratio)
+
+# Silhouette plot
+sil <- silhouette(kmeans_result$cluster, dist(scaled_data))
+plot(sil, border = NA)
+avg_sil_width <- mean(sil[, 'sil_width'])
+print(avg_sil_width)
+
+```
+# 4) Covariance Matrix
+
+```{r}
+# Covariance matrix
+cov_matrix <- cov(scaled_data)
+print(cov_matrix)
+```
+# 5) Principal Component Analysis (PCA)
+
+```{r}
+# Performing PCA
+pca_result <- prcomp(scaled_data, center = TRUE, scale. = TRUE)
+summary(pca_result)
+
+# Determining the number of components that explain at least 92% of the variance
+cum_var_exp <- cumsum(pca_result$sdev^2 / sum(pca_result$sdev^2))
+num_components <- which(cum_var_exp >= 0.92)[1]
+
+# Creating the PCA-transformed dataset
+pca_data <- as.data.frame(pca_result$x[, 1:num_components])
+```
+# 6) Clustering Analysis After PCA
+
+```{r}
+
+# Ensure NbClust package is installed and loaded
+if (!require("NbClust")) {
+  install.packages("NbClust")
+}
+library(NbClust)
+
+# Debugging steps to ensure pca_data is correctly prepared
+print(head(pca_data))
+print(str(pca_data))
+
+# Verify that there are no missing values in pca_data
+if (any(is.na(pca_data))) {
+  stop("pca_data contains missing values. Please handle missing values before clustering.")
+}
+
+# NbClust analysis
+tryCatch({
+  nbclust_results_euclidean_pca <- NbClust(pca_data, distance = "euclidean", min.nc = 2, max.nc = 10, method = "kmeans")
+  best_cluster_counts_pca <- table(nbclust_results_euclidean_pca$Best.nc[1, ])
+  barplot(best_cluster_counts_pca, main="after PCA Optimal number of clusters - k based on 'Euclidean distance'", 
+          xlab="Number of clusters k", ylab="Frequency among all indices", col="#0073C2FF")
+}, error = function(e) {
+  cat("Error in NbClust function: ", e$message, "\n")
+})
+
+# Elbow method after PCA
+wss_pca <- (nrow(pca_data) - 1) * sum(apply(pca_data, 2, var))
+for (i in 2:10) wss_pca[i] <- sum(kmeans(pca_data, centers = i, nstart = 25)$tot.withinss)
+plot(1:10, wss_pca, type = "b", pch = 19, frame = FALSE, 
+     xlab = "Number of clusters K", ylab = "Total within-clusters sum of squares",
+     main = "Elbow Method for Optimal Clusters after PCA")
+abline(v = which.min(diff(diff(wss_pca))), lty = 2)
+
+# Gap statistics after PCA
+set.seed(123)
+gap_stat_pca <- clusGap(pca_data, FUN = kmeans, nstart = 25, K.max = 10, B = 50)
+plot(gap_stat_pca, main = "Gap Statistics for Optimal Clusters after PCA")
+k_optimal_gap_pca <- maxSE(gap_stat_pca$Tab[, "gap"], gap_stat_pca$Tab[, "SE.sim"])
+
+# Silhouette analysis after PCA
+sil_width_pca <- numeric(10)
+for (k in 2:10) {
+  km.res <- kmeans(pca_data, centers = k, nstart = 25)
+  ss <- silhouette(km.res$cluster, dist(pca_data))
+  sil_width_pca[k] <- mean(ss[, 3])
+}
+plot(1:10, sil_width_pca, type = "b", pch = 19, frame = FALSE, 
+     xlab = "Number of clusters K", ylab = "Average silhouette width",
+     main = "Silhouette Method for Optimal Clusters after PCA")
+k_optimal_sil_pca <- which.max(sil_width_pca)
+
+# Determine the optimal k after PCA using majority vote
+k_optimal_pca <- as.numeric(names(sort(table(c(nbclust_results_euclidean_pca$Best.nc[1,], k_optimal_gap_pca, k_optimal_sil_pca)), decreasing = TRUE)[1]))
+
+
+
+```
+# 7) Performing K-Means Clustering on PCA-Transformed Dataset
+
+```{r}
+set.seed(123)
+kmeans_pca_result <- kmeans(pca_data, centers = k_optimal_pca, nstart = 25)
+
+# Display the clustering result
+print(kmeans_pca_result)
+
+# K-means clustering result plot after PCA
+clusplot(pca_data, kmeans_pca_result$cluster, color=TRUE, shade=TRUE, labels=2, lines=0)
+
+# BSS/TSS ratio after PCA
+bss_pca <- kmeans_pca_result$betweenss
+tss_pca <- kmeans_pca_result$totss
+bss_tss_ratio_pca <- bss_pca / tss_pca
+print(bss_tss_ratio_pca)
+
+# Silhouette plot after PCA
+sil_pca <- silhouette(kmeans_pca_result$cluster, dist(pca_data))
+plot(sil_pca, border = NA)
+avg_sil_width_pca <- mean(sil_pca[, 'sil_width'])
+print(avg_sil_width_pca)
+```
+# 8) Calculating the Calinski-Harabasz Index
+
+```{r}
+ch_index <- intCriteria(as.matrix(pca_data), kmeans_pca_result$cluster, "Calinski_Harabasz")
+print(ch_index)
+
+# Calculate Calinski-Harabasz Index for different k values
+k_values <- 2:10
+ch_indices <- sapply(k_values, function(k) {
+  km.res <- kmeans(pca_data, centers = k, nstart = 25)
+  ch_index <- intCriteria(as.matrix(pca_data), km.res$cluster, "Calinski_Harabasz")
+  return(ch_index$calinski_harabasz)
+})
+
+# Plot the Calinski-Harabasz Index values for different k
+plot(k_values, ch_indices, type = "b", pch = 19, col = "blue",
+     xlab = "Number of Clusters (k)", ylab = "Calinski-Harabasz Index",
+     main = "Calinski-Harabasz Index for Different Numbers of Clusters")
+
+
+
+
+```
+

@@ -1,0 +1,225 @@
+---
+title: "MLpart2"
+author: "Akthar"
+date: "2024-07-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# Load necessary libraries
+library(readxl)
+library(neuralnet)
+library(Metrics)
+library(dplyr)
+library(DiagrammeR)
+
+# Reading the Excel file
+file_path <- "ExchangeUSD.xlsx"
+exchange_data <- read_excel(file_path)
+
+# Extracting the exchange rates
+exchange_rates <- exchange_data[[3]]
+
+# Creating time-delayed input-output matrices
+time_delayed_matrix <- data.frame(
+  input_4 = lag(exchange_rates, 4),
+  input_3 = lag(exchange_rates, 3),
+  input_2 = lag(exchange_rates, 2),
+  input_1 = lag(exchange_rates, 1),
+  output = exchange_rates
+)
+
+# Removing rows with NA values
+cleaned_matrix <- na.omit(time_delayed_matrix)
+
+# Normalizing data
+normalized_matrix <- as.data.frame(scale(cleaned_matrix))
+
+# Function for min-max normalization
+min_max_normalize <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+# Apply normalization to input and output columns
+normalized_matrix <- as.data.frame(lapply(normalized_matrix, min_max_normalize))
+
+# Splitting data into training and testing sets
+set.seed(123)  # For reproducibility
+train_indices <- sample(1:nrow(normalized_matrix), size = 0.8 * nrow(normalized_matrix))
+train_data <- normalized_matrix[train_indices, ]
+test_data <- normalized_matrix[-train_indices, ]
+
+# Define min and max for un-normalizing
+min_output <- min(cleaned_matrix$output)
+max_output <- max(cleaned_matrix$output)
+
+# Function for un-normalizing
+unnormalize <- function(x, min, max) {
+  (max - min) * x + min
+}
+
+# Function to evaluate model and display metrics
+evaluate_model <- function(model, test_data, min_output, max_output) {
+  predictions <- predict(model, test_data[, -5])
+  predictions_unnorm <- unnormalize(predictions, min_output, max_output)
+  actual_unnorm <- unnormalize(test_data$output, min_output, max_output)
+  rmse <- sqrt(mean((actual_unnorm - predictions_unnorm)^2))
+  mae <- mean(abs(actual_unnorm - predictions_unnorm))
+  mape <- mean(abs(actual_unnorm - predictions_unnorm) / actual_unnorm) * 100
+  smape <- mean(200 * abs(actual_unnorm - predictions_unnorm) / (abs(actual_unnorm) + abs(predictions_unnorm)))
+  cat(sprintf("Testing Metrics:\nRMSE: %.5f\nMAE: %.5f\nMAPE: %.5f%%\nsMAPE: %.5f%%\n", rmse, mae, mape, smape))
+  return(rmse)
+}
+
+# Training and evaluating multiple models
+set.seed(123)
+neural_models <- list(
+  model_1 = neuralnet(output ~ input_4 + input_3 + input_2 + input_1, hidden = c(10, 7), data = train_data, linear.output = TRUE),
+  model_2 = neuralnet(output ~ input_3 + input_2 + input_1, hidden = c(4, 5), data = train_data, linear.output = TRUE),
+  model_3 = neuralnet(output ~ input_2 + input_1, hidden = 5, data = train_data, linear.output = TRUE),
+  model_4 = neuralnet(output ~ input_1, hidden = c(5, 5), data = train_data, linear.output = TRUE),
+  model_5 = neuralnet(output ~ input_2, hidden = 7, data = train_data, linear.output = TRUE),
+  model_6 = neuralnet(output ~ input_3, hidden = c(3, 6), data = train_data, linear.output = TRUE),
+  model_7 = neuralnet(output ~ input_4, hidden = 4, data = train_data, linear.output = TRUE),
+  model_8 = neuralnet(output ~ input_1 + input_2, hidden = c(8, 10), data = train_data, linear.output = TRUE),
+  model_9 = neuralnet(output ~ input_1 + input_3, hidden = 9, data = train_data, linear.output = TRUE),
+  model_10 = neuralnet(output ~ input_1 + input_4, hidden = c(3, 4), data = train_data, linear.output = TRUE),
+  model_11 = neuralnet(output ~ input_2 + input_3, hidden = 6, data = train_data, linear.output = TRUE),
+  model_12 = neuralnet(output ~ input_2 + input_4, hidden = c(2, 8), data = train_data, linear.output = TRUE),
+  model_13 = neuralnet(output ~ input_2 + input_4, hidden = 10, data = train_data, linear.output = TRUE),
+  model_14 = neuralnet(output ~ input_3 + input_4, hidden = 3, data = train_data, linear.output = TRUE),
+  model_15 = neuralnet(output ~ input_2 + input_3 + input_4, hidden = c(4, 8), data = train_data, linear.output = TRUE)
+)
+
+# Evaluate each model on testing data and store the RMSE
+model_performance <- data.frame(Model = character(), RMSE = numeric(), Layers = integer())
+
+for (model_name in names(neural_models)) {
+  cat(paste("Model:", model_name, "\n"))
+  model <- neural_models[[model_name]]
+  rmse <- evaluate_model(model, test_data, min_output, max_output)
+  layers <- length(model$weights[[1]]) - 1  # Subtract 1 to get the number of hidden layers
+  model_performance <- rbind(model_performance, data.frame(Model = model_name, RMSE = rmse, Layers = layers))
+  cat(sprintf("Testing Metrics:\nRMSE: %.5f\n\n", rmse))
+}
+
+# Find the best models
+best_model_name <- model_performance[which.min(model_performance$RMSE), "Model"]
+best_one_layer_model_name <- model_performance %>% filter(Layers == 1) %>% arrange(RMSE) %>% slice(1) %>% pull(Model)
+best_two_layer_model_name <- model_performance %>% filter(Layers == 2) %>% arrange(RMSE) %>% slice(1) %>% pull(Model)
+
+best_model <- neural_models[[best_model_name]]
+best_one_layer_model <- neural_models[[best_one_layer_model_name]]
+best_two_layer_model <- neural_models[[best_two_layer_model_name]]
+
+# Function to visualize the neural network structure
+plot_nn_structure <- function(nn_model, title) {
+  # Extract weights
+  weights <- nn_model$weights[[1]]
+  num_layers <- length(weights)
+  layers <- list()
+
+  # Create node labels and connections
+  nodes <- c("input_1", "input_2", "input_3", "input_4")
+  edges <- list()
+  for (i in 1:num_layers) {
+    layer_nodes <- paste0("H", i, "_", 1:nrow(weights[[i]]))
+    layers[[i]] <- layer_nodes
+    nodes <- c(nodes, layer_nodes)
+    if (i == 1) {
+      # Connect input layer to first hidden layer
+      for (input in 1:4) {
+        for (node in layer_nodes) {
+          edges <- c(edges, paste0("input_", input, " -> ", node))
+        }
+      }
+    } else {
+      # Connect hidden layers
+      for (node_from in layers[[i - 1]]) {
+        for (node_to in layer_nodes) {
+          edges <- c(edges, paste0(node_from, " -> ", node_to))
+        }
+      }
+    }
+  }
+
+  # Connect last hidden layer to output
+  for (node in layers[[num_layers]]) {
+    edges <- c(edges, paste0(node, " -> output"))
+  }
+
+  # Create graph
+  grViz(paste0("
+    digraph G {
+      graph [layout = dot]
+      node [shape = circle, style = filled, color = lightgreen]
+      edge [color = darkblue]
+      ", paste(nodes, collapse = "; "), ";
+      output [shape = doublecircle, color = lightcoral];
+      ", paste(edges, collapse = "; "), "
+    }
+  "))
+}
+
+# Visualize all models
+for (i in 1:length(neural_models)) {
+  model_name <- paste("model", i, sep = "_")
+  cat("\nVisualizing Model:", model_name, "\n")
+  plot_nn_structure(neural_models[[i]], model_name)
+}
+
+# Visualize the best models
+cat("\nVisualizing Best Models:\n")
+
+plot_nn_structure(best_model, paste("Best Model Structure:", best_model_name))
+plot_nn_structure(best_one_layer_model, paste("Best One Hidden Layer Model Structure:", best_one_layer_model_name))
+plot_nn_structure(best_two_layer_model, paste("Best Two Hidden Layer Model Structure:", best_two_layer_model_name))
+
+# Function to display metrics for a given model
+display_metrics <- function(model, test_data, min_output, max_output) {
+  predictions <- predict(model, test_data[, -5])
+  predictions_unnorm <- unnormalize(predictions, min_output, max_output)
+  actual_unnorm <- unnormalize(test_data$output, min_output, max_output)
+  rmse <- sqrt(mean((actual_unnorm - predictions_unnorm)^2))
+  mae <- mean(abs(actual_unnorm - predictions_unnorm))
+  mape <- mean(abs(actual_unnorm - predictions_unnorm) / actual_unnorm) * 100
+  smape <- mean(200 * abs(actual_unnorm - predictions_unnorm) / (abs(actual_unnorm) + abs(predictions_unnorm)))
+  cat(sprintf("Testing Metrics:\nRMSE: %.5f\nMAE: %.5f\nMAPE: %.5f%%\nsMAPE: %.5f%%\n", rmse, mae, mape, smape))
+}
+
+# Display metrics for the best models
+cat("\nBest Overall Model Metrics:\n")
+display_metrics(best_model, test_data, min_output, max_output)
+
+cat("\nBest One Hidden Layer Model Metrics:\n")
+display_metrics(best_one_layer_model, test_data, min_output, max_output)
+
+cat("\nBest Two Hidden Layer Model Metrics:\n")
+display_metrics(best_two_layer_model, test_data, min_output, max_output)
+
+# Graphical representation of results (Scatter plot) for the best overall model
+best_model_predictions <- predict(best_model, test_data[, -5])
+best_model_predictions_unnorm <- unnormalize(best_model_predictions, min_output, max_output)
+test_actual_unnorm <- unnormalize(test_data$output, min_output, max_output)
+plot(test_actual_unnorm, best_model_predictions_unnorm, col = 'darkgreen', main = 'Actual vs. Predicted Exchange Rates (Best Model)', pch = 18, cex = 0.7)
+abline(a = 0, b = 1, col = "darkred", lwd = 2)  # Adding a line y=x for reference
+
+# Graphical representation of results (Scatter plot) for the best one hidden layer model
+one_layer_predictions <- predict(best_one_layer_model, test_data[, -5])
+one_layer_predictions_unnorm <- unnormalize(one_layer_predictions, min_output, max_output)
+plot(test_actual_unnorm, one_layer_predictions_unnorm, col = 'darkblue', main = 'Actual vs. Predicted Exchange Rates (Best One Hidden Layer Model)', pch = 18, cex = 0.7)
+abline(a = 0, b = 1, col = "darkred", lwd = 2)  # Adding a line y=x for reference
+
+# Graphical representation of results (Scatter plot) for the best two hidden layer model
+two_layer_predictions <- predict(best_two_layer_model, test_data[, -5])
+two_layer_predictions_unnorm <- unnormalize(two_layer_predictions, min_output, max_output)
+plot(test_actual_unnorm, two_layer_predictions_unnorm, col = 'darkmagenta', main = 'Actual vs. Predicted Exchange Rates (Best Two Hidden Layer Model)', pch = 18, cex = 0.7)
+abline(a = 0, b = 1, col = "darkred", lwd = 2)  # Adding a line y=x for reference
+
+
+```
